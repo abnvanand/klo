@@ -53,5 +53,12 @@ func (p *JSONPathPrinter) Fprint(w io.Writer, v interface{}) error {
 			"JSONPath failure on expression %q for value %+v",
 			p.raw, v)
 	}
+
+	// Reset the JSONPath expression after each use to allow printing again,
+	// since K8s client-go JSONPath implementation modifies the internal state.
+	if err := p.Expr.Parse(p.raw); err != nil {
+		return fmt.Errorf("failed to reset JSONPath expression: %v", err)
+	}
+
 	return nil
 }
