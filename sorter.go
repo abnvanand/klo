@@ -127,11 +127,16 @@ func (ki keyedItems) Swap(i, j int) {
 // Oh, and in contrast to kubectl's isLess() version, we don't panic, because
 // that's really not nice in the face of CLI users.
 func reflectedLess(i, j reflect.Value) bool {
-	// First, follow pointers, so we don't need to care about them later...
-	for i.Kind() == reflect.Ptr {
+	// First, follow pointers and interfaces, so we don't need to care about
+	// them later. Unwrapping interfaces matters when sorting slices of
+	// map[string]interface{}, where every JSONPath result comes back with
+	// Kind == reflect.Interface and would otherwise fall through to the
+	// stringified fallback below — making every key compare equal and the
+	// sort a no-op.
+	for i.Kind() == reflect.Ptr || i.Kind() == reflect.Interface {
 		i = i.Elem()
 	}
-	for j.Kind() == reflect.Ptr {
+	for j.Kind() == reflect.Ptr || j.Kind() == reflect.Interface {
 		j = j.Elem()
 	}
 	// Now let's compare...
