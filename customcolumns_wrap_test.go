@@ -104,3 +104,44 @@ func TestListOfMapsCellsExpandPerElement(t *testing.T) {
 		t.Fatalf("expected 5 lines:\n%s", got)
 	}
 }
+
+func TestNestedMapsAreIndented(t *testing.T) {
+	type row struct {
+		Name string
+		Cpus map[string]interface{}
+	}
+	data := []row{{"a", map[string]interface{}{
+		"version": "v1",
+		"sockets": []map[string]interface{}{{"cores": 16, "arch": "x86_64"}},
+		"meta":    map[string]interface{}{"k": "v", "inner": map[string]interface{}{"z": 1}},
+		"empty":   map[string]interface{}{},
+	}}}
+	vp, err := NewCustomColumnsPrinterFromSpec("NAME:{.Name},CPUS:{.Cpus}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := vp.Fprint(&buf, data); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	col := strings.Index(lines[0], "CPUS")
+	var cell []string
+	for _, l := range lines[1:] {
+		cell = append(cell, l[col:])
+	}
+	want := []string{
+		"empty: <none>",
+		"meta:",
+		"  inner:",
+		"    z: 1",
+		"  k: v",
+		"sockets:",
+		"  arch: x86_64",
+		"  cores: 16",
+		"version: v1",
+	}
+	if strings.Join(cell, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got:\n%s\nwant:\n%s", strings.Join(cell, "\n"), strings.Join(want, "\n"))
+	}
+}

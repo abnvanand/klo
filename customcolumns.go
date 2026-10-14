@@ -218,8 +218,9 @@ func (p *CustomColumnsPrinter) printrow(w io.Writer, rowval interface{}) error {
 
 // cellLines turns a JSONPath expression result into the lines of a cell. A
 // result consisting of a single slice, array or map value is expanded into
-// one line per element (maps: one sorted "key: value" line per entry), unless
-// nowrap is set; anything else is stringified into a single line.
+// one line per element (maps: one sorted "key: value" line per entry, nested
+// maps indented below their key), unless nowrap is set; anything else is
+// stringified into a single line.
 func cellLines(res [][]reflect.Value, nowrap bool) []string {
 	if !nowrap && len(res) == 1 && len(res[0]) == 1 {
 		v := indirect(res[0][0])
@@ -228,25 +229,12 @@ func cellLines(res [][]reflect.Value, nowrap bool) []string {
 			if v.Len() == 0 {
 				return []string{"<none>"}
 			}
-			var lines []string
-			for i := 0; i < v.Len(); i++ {
-				if e := indirect(v.Index(i)); e.IsValid() && e.Kind() == reflect.Map && e.Len() > 0 {
-					// A list of maps: one block of "key: value" lines per
-					// element, blocks separated by an empty line.
-					if len(lines) > 0 {
-						lines = append(lines, "")
-					}
-					lines = append(lines, mapLines(e)...)
-					continue
-				}
-				lines = append(lines, formatValue(v.Index(i)))
-			}
-			return lines
-		case v.IsValid() && v.Kind() == reflect.Map:
+			return listLines(v, "")
+		case isMap(v):
 			if v.Len() == 0 {
 				return []string{"<none>"}
 			}
-			return mapLines(v)
+			return mapLines(v, "")
 		}
 	}
 	return []string{stringFromJSONExprResult(res, ", ")}
@@ -268,31 +256,93 @@ func isList(v reflect.Value) bool {
 		v.Type().Elem().Kind() != reflect.Uint8
 }
 
-// mapLines returns one "key: value" line per map entry, sorted by key.
-func mapLines(m reflect.Value) []string {
-	lines := make([]string, 0, m.Len())
-	for _, k := range m.MapKeys() {
-		lines = append(lines, fmt.Sprintf("%v: %s", k.Interface(), formatValue(m.MapIndex(k))))
+func isMap(v reflect.Value) bool {
+	return v.IsValid() && v.Kind() == reflect.Map
+}
+
+// hasMapElement reports whether a list contains at least one non-empty map.
+func hasMapElement(l reflect.Value) bool {
+	for i := 0; i < l.Len(); i++ {
+		if e := indirect(l.Index(i)); isMap(e) && e.Len() > 0 {
+			return true
+		}
 	}
-	sort.Strings(lines)
+	return false
+}
+
+// listLines returns one line per list element. Non-empty map elements expand
+// into blocks of "key: value" lines, separated by an empty line.
+func listLines(l reflect.Value, indent string) []string {
+	var lines []string
+	for i := 0; i < l.Len(); i++ {
+		if e := indirect(l.Index(i)); isMap(e) && e.Len() > 0 {
+			if len(lines) > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, mapLines(e, indent)...)
+			continue
+		}
+		lines = append(lines, indent+formatValue(l.Index(i)))
+	}
+	return lines
+}
+
+// mapLines returns one "key: value" line per map entry, sorted by key. Values
+// that are non-empty maps, or lists containing maps, are expanded on the lines
+// below their key, indented by two further spaces.
+func mapLines(m reflect.Value, indent string) []string {
+	keys := m.MapKeys()
+	sort.Slice(keys, func(i, j int) bool {
+		return fmt.Sprint(keys[i].Interface()) < fmt.Sprint(keys[j].Interface())
+	})
+	var lines []string
+	for _, k := range keys {
+		val := indirect(m.MapIndex(k))
+		prefix := fmt.Sprintf("%s%v:", indent, k.Interface())
+		switch {
+		case isMap(val) && val.Len() > 0:
+			lines = append(lines, prefix)
+			lines = append(lines, mapLines(val, indent+"  ")...)
+		case isList(val) && hasMapElement(val):
+			lines = append(lines, prefix)
+			lines = append(lines, listLines(val, indent+"  ")...)
+		default:
+			lines = append(lines, prefix+" "+formatValue(val))
+		}
+	}
 	return lines
 }
 
 // formatValue formats a value that is nested inside a cell on a single line.
-// Nil values print as <none>, lists as "a, b, c" and maps as "{k: v, k: v}".
+// Nil and empty values print as <none>, lists as "a, b, c" and maps as
+// "{k: v, k: v}".
 func formatValue(v reflect.Value) string {
 	v = indirect(v)
 	switch {
 	case !v.IsValid():
 		return "<none>"
 	case isList(v):
+		if v.Len() == 0 {
+			return "<none>"
+		}
 		parts := make([]string, v.Len())
 		for i := range parts {
 			parts[i] = formatValue(v.Index(i))
 		}
 		return strings.Join(parts, ", ")
-	case v.Kind() == reflect.Map:
-		return "{" + strings.Join(mapLines(v), ", ") + "}"
+	case isMap(v):
+		if v.Len() == 0 {
+			return "<none>"
+		}
+		keys := v.MapKeys()
+		sort.Slice(keys, func(i, j int) bool {
+			return fmt.Sprint(keys[i].Interface()) < fmt.Sprint(keys[j].Interface())
+		})
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			parts[i] = fmt.Sprintf("%v: %s", k.Interface(), formatValue(v.MapIndex(k)))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
 	}
 	return fmt.Sprintf("%v", v.Interface())
 }
