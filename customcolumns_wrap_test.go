@@ -76,3 +76,31 @@ func TestMapCellsWrapKeyValuePerLine(t *testing.T) {
 		t.Fatalf("expected single-line map:\n%s", buf.String())
 	}
 }
+
+func TestListOfMapsCellsExpandPerElement(t *testing.T) {
+	type row struct {
+		Name string
+		Gpus []map[string]interface{}
+	}
+	data := []row{{"a", []map[string]interface{}{
+		{"b": "2", "a": "1"},
+		{"a": "3"},
+	}}}
+	vp, err := NewCustomColumnsPrinterFromSpec("NAME:{.Name},GPUS:{.Gpus}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := vp.Fprint(&buf, data); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if strings.Contains(got, "{") || strings.Contains(got, "map[") {
+		t.Fatalf("map not expanded:\n%s", got)
+	}
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	// header + a,b + blank separator + a
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines:\n%s", got)
+	}
+}

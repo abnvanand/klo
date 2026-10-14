@@ -228,9 +228,18 @@ func cellLines(res [][]reflect.Value, nowrap bool) []string {
 			if v.Len() == 0 {
 				return []string{"<none>"}
 			}
-			lines := make([]string, v.Len())
-			for i := range lines {
-				lines[i] = formatValue(v.Index(i))
+			var lines []string
+			for i := 0; i < v.Len(); i++ {
+				if e := indirect(v.Index(i)); e.IsValid() && e.Kind() == reflect.Map && e.Len() > 0 {
+					// A list of maps: one block of "key: value" lines per
+					// element, blocks separated by an empty line.
+					if len(lines) > 0 {
+						lines = append(lines, "")
+					}
+					lines = append(lines, mapLines(e)...)
+					continue
+				}
+				lines = append(lines, formatValue(v.Index(i)))
 			}
 			return lines
 		case v.IsValid() && v.Kind() == reflect.Map:
