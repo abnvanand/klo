@@ -21,6 +21,7 @@ import (
 	"io"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -216,28 +217,75 @@ func (p *CustomColumnsPrinter) printrow(w io.Writer, rowval interface{}) error {
 }
 
 // cellLines turns a JSONPath expression result into the lines of a cell. A
-// result consisting of a single slice (or array) value is expanded into one
-// line per element, unless nowrap is set; anything else is stringified into
-// a single line.
+// result consisting of a single slice, array or map value is expanded into
+// one line per element (maps: one sorted "key: value" line per entry), unless
+// nowrap is set; anything else is stringified into a single line.
 func cellLines(res [][]reflect.Value, nowrap bool) []string {
 	if !nowrap && len(res) == 1 && len(res[0]) == 1 {
-		v := res[0][0]
-		for v.IsValid() && v.Kind() == reflect.Interface {
-			v = v.Elem()
-		}
-		if v.IsValid() && (v.Kind() == reflect.Slice || v.Kind() == reflect.Array) &&
-			v.Type().Elem().Kind() != reflect.Uint8 {
+		v := indirect(res[0][0])
+		switch {
+		case isList(v):
 			if v.Len() == 0 {
 				return []string{"<none>"}
 			}
 			lines := make([]string, v.Len())
 			for i := range lines {
-				lines[i] = fmt.Sprintf("%v", v.Index(i).Interface())
+				lines[i] = formatValue(v.Index(i))
 			}
 			return lines
+		case v.IsValid() && v.Kind() == reflect.Map:
+			if v.Len() == 0 {
+				return []string{"<none>"}
+			}
+			return mapLines(v)
 		}
 	}
 	return []string{stringFromJSONExprResult(res, ", ")}
+}
+
+// indirect unwraps interfaces and non-nil pointers.
+func indirect(v reflect.Value) reflect.Value {
+	for v.IsValid() && (v.Kind() == reflect.Interface || v.Kind() == reflect.Ptr) {
+		if v.IsNil() {
+			return reflect.Value{}
+		}
+		v = v.Elem()
+	}
+	return v
+}
+
+func isList(v reflect.Value) bool {
+	return v.IsValid() && (v.Kind() == reflect.Slice || v.Kind() == reflect.Array) &&
+		v.Type().Elem().Kind() != reflect.Uint8
+}
+
+// mapLines returns one "key: value" line per map entry, sorted by key.
+func mapLines(m reflect.Value) []string {
+	lines := make([]string, 0, m.Len())
+	for _, k := range m.MapKeys() {
+		lines = append(lines, fmt.Sprintf("%v: %s", k.Interface(), formatValue(m.MapIndex(k))))
+	}
+	sort.Strings(lines)
+	return lines
+}
+
+// formatValue formats a value that is nested inside a cell on a single line.
+// Nil values print as <none>, lists as "a, b, c" and maps as "{k: v, k: v}".
+func formatValue(v reflect.Value) string {
+	v = indirect(v)
+	switch {
+	case !v.IsValid():
+		return "<none>"
+	case isList(v):
+		parts := make([]string, v.Len())
+		for i := range parts {
+			parts[i] = formatValue(v.Index(i))
+		}
+		return strings.Join(parts, ", ")
+	case v.Kind() == reflect.Map:
+		return "{" + strings.Join(mapLines(v), ", ") + "}"
+	}
+	return fmt.Sprintf("%v", v.Interface())
 }
 
 // Stringifies a JSONPath expression result.
