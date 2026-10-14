@@ -35,6 +35,9 @@ type CustomColumnsPrinter struct {
 	HideHeaders bool
 	// Padding between columns
 	Padding int
+	// NoWrapSlices disables the expansion of slice-valued cells into one
+	// element per line; slices are then printed as "[a b c]" on a single line.
+	NoWrapSlices bool
 }
 
 // Column stores the header text and the JSONPath for fetching column values.
@@ -171,9 +174,12 @@ func (p *CustomColumnsPrinter) Fprint(w io.Writer, v interface{}) error {
 	return nil
 }
 
-// printrow prints a single row, that is, a single row object.
+// printrow prints a single row, that is, a single row object. If a cell
+// resolves to a slice, its elements are printed one per line, with the other
+// columns left blank on the continuation lines.
 func (p *CustomColumnsPrinter) printrow(w io.Writer, rowval interface{}) error {
-	rowvals := make([]string, len(p.Columns))
+	cells := make([][]string, len(p.Columns))
+	height := 1
 	for cidx, col := range p.Columns {
 		// Calculate the result of a this column for the current row.
 		res, err := col.Template.FindResults(rowval)
@@ -184,15 +190,54 @@ func (p *CustomColumnsPrinter) printrow(w io.Writer, rowval interface{}) error {
 		// column might consist of multiple values, or even none at
 		// all.
 		if len(res) == 0 || len(res[0]) == 0 {
-			rowvals[cidx] = "<none>"
+			cells[cidx] = []string{"<none>"}
 		} else {
-			rowvals[cidx] = stringFromJSONExprResult(res, ", ")
+			cells[cidx] = cellLines(res, p.NoWrapSlices)
+		}
+		if len(cells[cidx]) > height {
+			height = len(cells[cidx])
 		}
 	}
-	// Print this column by printing all columns' values, separated by god'ol
+	// Print this row by printing all columns' values, separated by god'ol
 	// horizontal tab control chars.
-	_, err := fmt.Fprintln(w, strings.Join(rowvals, "\t"))
-	return err
+	line := make([]string, len(p.Columns))
+	for l := 0; l < height; l++ {
+		for cidx := range p.Columns {
+			line[cidx] = ""
+			if l < len(cells[cidx]) {
+				line[cidx] = cells[cidx][l]
+			}
+		}
+		if _, err := fmt.Fprintln(w, strings.Join(line, "\t")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cellLines turns a JSONPath expression result into the lines of a cell. A
+// result consisting of a single slice (or array) value is expanded into one
+// line per element, unless nowrap is set; anything else is stringified into
+// a single line.
+func cellLines(res [][]reflect.Value, nowrap bool) []string {
+	if !nowrap && len(res) == 1 && len(res[0]) == 1 {
+		v := res[0][0]
+		for v.IsValid() && v.Kind() == reflect.Interface {
+			v = v.Elem()
+		}
+		if v.IsValid() && (v.Kind() == reflect.Slice || v.Kind() == reflect.Array) &&
+			v.Type().Elem().Kind() != reflect.Uint8 {
+			if v.Len() == 0 {
+				return []string{"<none>"}
+			}
+			lines := make([]string, v.Len())
+			for i := range lines {
+				lines[i] = fmt.Sprintf("%v", v.Index(i).Interface())
+			}
+			return lines
+		}
+	}
+	return []string{stringFromJSONExprResult(res, ", ")}
 }
 
 // Stringifies a JSONPath expression result.
